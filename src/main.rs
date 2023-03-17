@@ -116,13 +116,16 @@ mod cfg {
     pub struct Schedule {
         pub title: String,
         pub actions: Vec<Action>,
-        #[serde(default, rename = "loop")]
+        #[serde(default)]
         pub loop_schedule: bool,
+        #[serde(default)]
+        pub start_on_startup: bool,
     }
 
     #[derive(Debug, Deserialize)]
     pub enum Action {
-        StartTimer(String, TimerEndAction),
+        StartExistingTimer(String, TimerEndAction),
+        StartTimer(Timer, TimerEndAction),
     }
 
     #[derive(Debug, Deserialize)]
@@ -132,4 +135,111 @@ mod cfg {
     }
 }
 
-fn main() {}
+mod event {
+    use std::{
+        any::{Any, TypeId},
+        collections::hash_map::DefaultHasher,
+        fmt,
+        hash::{Hash, Hasher},
+        rc::Rc,
+    };
+
+    pub struct EventsBuilder(Vec<Event>);
+
+    impl EventsBuilder {
+        pub fn new() -> EventsBuilder {
+            EventsBuilder(Vec::new())
+        }
+
+        pub fn push(&mut self, with: Event) {
+            self.0.push(with)
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Events(Vec<Event>);
+
+    impl Events {
+        pub fn builder() -> EventsBuilder {
+            EventsBuilder::new()
+        }
+
+        pub fn contains(&self, event: &Event) -> bool {
+            self.0.contains(event)
+        }
+
+        pub fn find<E: 'static>(&self) -> Option<&Event> {
+            for e in &self.0 {
+                if e.is::<E>() {
+                    return Some(e);
+                }
+            }
+            None
+        }
+    }
+
+    pub trait EventTrait: fmt::Debug {
+        fn eq(&self, other: &dyn EventTrait) -> bool;
+        fn hash(&self) -> u64;
+        // see https://stackoverflow.com/a/33687996/1600898
+        fn as_any(&self) -> &dyn Any;
+    }
+
+    impl<T: Eq + Hash + fmt::Debug + 'static> EventTrait for T {
+        fn eq(&self, other: &dyn EventTrait) -> bool {
+            if let Some(other) = other.as_any().downcast_ref::<T>() {
+                return self == other;
+            }
+            false
+        }
+
+        fn hash(&self) -> u64 {
+            let mut h = DefaultHasher::new();
+            // mix the typeid of T into the hash to make distinct types
+            // provide distinct hashes
+            Hash::hash(&(TypeId::of::<T>(), self), &mut h);
+            h.finish()
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Event(Rc<dyn EventTrait>);
+
+    impl PartialEq for Event {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.eq(&*other.0)
+        }
+    }
+
+    impl Eq for Event {}
+
+    impl Event {
+        pub fn new(event: Rc<dyn EventTrait>) -> Self {
+            Event(event)
+        }
+
+        pub fn is<E: 'static>(&self) -> bool {
+            self.0.as_any().is::<E>()
+        }
+
+        pub fn downcast<E: 'static>(&self) -> Option<&E> {
+            self.0.as_any().downcast_ref()
+        }
+    }
+}
+
+use std::time::Duration;
+
+use error::Result;
+use event::{Event, Events};
+
+fn main() {
+    loop {
+        let events = Events::builder();
+        if let Some(true) = crossterm::event::poll(Duration::ZERO) {}
+    }
+}
